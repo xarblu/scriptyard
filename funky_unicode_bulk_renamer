@@ -8,6 +8,8 @@ from argparse import ArgumentParser
 from errno import ENOENT
 from pathlib import Path
 from typing import Optional
+from re import finditer
+from os import fsencode
 
 
 def confirm(prompt: str = "Confirm") -> bool:
@@ -22,15 +24,47 @@ def confirm(prompt: str = "Confirm") -> bool:
             return False
 
 
-def fix_path(path: Path, handler: str) -> Optional[Path]:
+def fix_path(path: Path) -> Optional[Path]:
     """
     Detect and fix weird names
     """
-    path_str = path.as_posix()
-    path_str_reenc = (path_str
-                      .encode("shift_jis", errors=handler)
-                      .decode("shift_jis"))
-    path_reenc = Path(path_str_reenc)
+    path_str = path.stem
+
+    # this escapes all unicode to \uXXXX
+    path_str_escaped = (path_str
+                        .encode("raw_unicode_escape")
+                        .decode("utf-8"))
+
+    # try to find \ufffe substring
+    # this indicates a substring with funky utf-16 encoding
+    fixed = []
+    pos = 0
+    for match in finditer(r"\\ufffe(?:\\u....)*", path_str_escaped):
+        # "healthy" unicode can just be unescaped
+        fixed.append(path_str_escaped[pos:match.start()]
+                     .encode("utf-8")
+                     .decode("raw_unicode_escape"))
+
+        # "bad" unicode needs to be endian-flipped (?)
+        # python says 0xFFFE means we have utf-16 (or 32 but that's likely
+        # not the case here) with flipped byte order
+        # https://docs.python.org/3/library/codecs.html#encodings-and-unicode
+        #
+        # however even this isn't really correct...
+        # fixed.append(path_str_escaped[match.start():match.end()]
+        #              .encode("utf-8")
+        #              .decode("raw_unicode_escape")
+        #              .encode("utf-16-le")
+        #              .decode("utf-16-be"))
+
+        pos = match.end()
+
+    # the "healthy" rest
+    fixed.append(path_str_escaped[pos:]
+                 .encode("utf-8")
+                 .decode("raw_unicode_escape"))
+
+    path_reenc = path.with_stem("".join(fixed))
 
     type_str = "directory" if path.is_dir() else "file"
 
@@ -38,7 +72,7 @@ def fix_path(path: Path, handler: str) -> Optional[Path]:
         # minor QOL - don't leave trailing whitespace
         path_reenc = path_reenc.with_stem(path_reenc.stem.rstrip())
         print(f"Found potentially broken {type_str} path:\n'{path}'")
-        print(f"Rename to?\n'{path_reenc}'")
+        print(f"Rename to:\n'{path_reenc}' ?")
         if confirm():
             return path_reenc
 
@@ -53,19 +87,8 @@ def main() -> int:
     parser.add_argument("dirs",
                         nargs="+",
                         help="Directory where to start renaming")
-    parser.add_argument("--mode",
-                        default="remove",
-                        choices=["remove", "replace", "escape"],
-                        help="What to do with bad path components")
 
     args = parser.parse_args()
-
-    if args.mode == "remove":
-        handler = "ignore"
-    elif args.mode == "replace":
-        handler = "replace"
-    elif args.mode == "escape":
-        handler = "backslashreplace"
 
     for d in args.dirs:
         root = Path(d)
@@ -80,13 +103,13 @@ def main() -> int:
         for dirpath, dirnames, filenames in walker:
             for i in range(len(dirnames)):
                 path = dirpath / dirnames[i]
-                if (fixed := fix_path(path, handler)) is not None:
+                if (fixed := fix_path(path)) is not None:
                     path.rename(fixed)
                     dirnames[i] = fixed.name
 
             for i in range(len(filenames)):
                 path = dirpath / filenames[i]
-                if (fixed := fix_path(path, handler)) is not None:
+                if (fixed := fix_path(path)) is not None:
                     path.rename(fixed)
                     filenames[i] = fixed.name
 
