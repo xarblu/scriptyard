@@ -6,10 +6,68 @@
 
 from argparse import ArgumentParser
 from errno import ENOENT
+from json import JSONDecodeError
+from json import loads as json_load
 from pathlib import Path
-from typing import Optional
 from re import finditer
-from os import fsencode
+from subprocess import CalledProcessError
+from subprocess import run as run_cmd
+from typing import Optional
+
+
+def extract_metadata(file: Path) -> dict[str, Optional[str]]:
+    """
+    Extract metadata from file
+    """
+    metadata: dict[str, Optional[str]] = {
+        "title": None,
+        "album": None
+    }
+
+    try:
+        ps = run_cmd(["mediainfo", "--Output=JSON", file.as_posix()],
+                     check=True,
+                     text=True,
+                     capture_output=True)
+        mediainfo_all = json_load(ps.stdout)
+
+        mediainfo: dict[str, str] = {}
+        for track in mediainfo_all["media"]["track"]:
+            if track["@type"] == "General":
+                mediainfo = track
+                break
+
+    except (CalledProcessError, JSONDecodeError) as e:
+        print(f"Failed to extract metadata:\n{str(e)}")
+        return metadata
+
+    if (title := mediainfo.get("Title")) is not None:
+        metadata["title"] = title
+
+    if (album := mediainfo.get("Album")) is not None:
+        metadata["album"] = album
+
+    print(metadata)
+
+    return metadata
+
+
+def inject_title(stem: str, title: str) -> str:
+    """
+    Try to replace part of the file stem with the specified title
+    Replace all if no valid insertion point could be found
+    """
+    new: str = ""
+
+    for length in range(len(title), 0, -1):
+        title_slice = title[0:length]
+        if (idx := stem.find(title_slice)) > -1:
+            new = stem[0:idx] + title
+            break
+    else:
+        new = title
+
+    return new
 
 
 def confirm(prompt: str = "Confirm") -> bool:
@@ -66,15 +124,29 @@ def fix_path(path: Path) -> Optional[Path]:
 
     path_reenc = path.with_stem("".join(fixed))
 
-    type_str = "directory" if path.is_dir() else "file"
+    if path == path_reenc:
+        return None
 
-    if path != path_reenc:
+    print(f"Found potentially broken path:\n'{path}'")
+
+    if path.is_dir():
         # minor QOL - don't leave trailing whitespace
-        path_reenc = path_reenc.with_stem(path_reenc.stem.rstrip())
-        print(f"Found potentially broken {type_str} path:\n'{path}'")
-        print(f"Rename to:\n'{path_reenc}' ?")
-        if confirm():
-            return path_reenc
+        # for directories we can't really do anything else
+        new_path = path_reenc.with_stem(path_reenc.stem.rstrip())
+    else:
+        print("Attempting top use title from metadata")
+        metadata = extract_metadata(path)
+        if (title := metadata.get("title")) is not None:
+            print(f"Using title '{title}'")
+            new_path = path_reenc.with_stem(inject_title(path.stem, title))
+        else:
+            print("Could not get title from metadata")
+            # minor QOL - don't leave trailing whitespace
+            new_path = path_reenc.with_stem(path_reenc.stem.rstrip())
+
+    print(f"Rename to:\n'{new_path}' ?")
+    if confirm():
+        return new_path
 
     return None
 
