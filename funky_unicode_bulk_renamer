@@ -14,6 +14,8 @@ from re import sub as re_replace
 from subprocess import run as run_cmd
 from typing import Optional
 
+ASSUME_YES = False
+
 
 def extract_metadata(file: Path) -> dict[str, Optional[str]]:
     """
@@ -88,6 +90,9 @@ def confirm(prompt: str = "Confirm") -> bool:
     """
     Simple confirmation dialogue
     """
+    if ASSUME_YES:
+        return True
+
     while True:
         response = input(prompt + " [Y/n]: ")
         if response.lower() in ["", "y", "yes"]:
@@ -139,12 +144,21 @@ def main() -> int:
     """
     Main entry point
     """
+    global ASSUME_YES
+
     parser = ArgumentParser()
     parser.add_argument("dirs",
                         nargs="+",
                         help="Directory where to start renaming")
+    parser.add_argument("-y", "--yes",
+                        action="store_true",
+                        dest="assume_yes",
+                        help="Assume yes for all questions")
 
     args = parser.parse_args()
+
+    if args.assume_yes:
+        ASSUME_YES = True
 
     for d in args.dirs:
         root = Path(d)
